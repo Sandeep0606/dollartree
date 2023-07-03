@@ -1,0 +1,280 @@
+# Pipeline to build and distribute Family Dollar Mobile App
+pr: none
+# specific path build
+trigger:
+  branches:
+    include:
+    - main
+  paths:
+    include:
+    - family-dollar-mobile-app
+    exclude:
+    - README.md
+    - azure-pipelines.yml
+
+# Parameters that can be changed during build trigger
+parameters:
+  - name: buildIOS
+    displayName: 'Build iOS?'
+    type: boolean
+    default: true
+  - name: buildAndroid
+    displayName: 'Build Android?'
+    type: boolean
+    default: true
+  - name: deployFirebase
+    displayName: 'Deploy to Firebase?'
+    type: boolean
+    default: false
+  - name: deployBrowserstack
+    displayName: 'Deploy to Browserstack?'
+    type: boolean
+    default: false
+  - name: publishArtifacts
+    displayName: 'Publish build artifacts?'
+    type: boolean
+    default: false
+  - name: releaseVersion
+    displayName: 'Release Version'
+    type: string
+    default: '1.0'
+  - name: buildNumber
+    displayName: 'Build Number'
+    type: string
+    default: $(Build.BuildId)
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'STG'
+  - name: xcodePath
+    displayName: 'XCode Path'
+    type: string
+    default: '/Applications/Xcode_14.3.1.app'
+  - name: projectPath
+    displayName: 'Project Path'
+    type: string
+    default: '$(Build.Repository.LocalPath)/family-dollar-mobile-app/packages/family_dollar_app'
+  - name: project
+    displayName: 'Project'
+    type: string
+    default: 'family_dollar_app'
+  - name: scheme
+    displayName: 'Scheme'
+    type: string
+    default: 'family_dollar_app_qa'
+  - name: config
+    displayName: 'Config'
+    type: string
+    default: 'Release'
+  - name: testGroups
+    displayName: 'Notify Test Groups'
+    type: string
+    default: 'ps_dev,fd_dev,ps_qa,fd_qa,ps_product,fd_product'
+
+variables:
+- group: FamilyDollar_Mobile_App_Build
+  
+jobs:
+- job: 'iOS_App_Package_Build_and_Deploy'
+  condition: eq('${{parameters.buildIOS}}', true)
+  timeoutInMinutes: 60
+  
+  pool:
+    vmImage: 'macOS-13'
+
+  steps:
+  - checkout: self
+    displayName: 'Checkout FD Code Repo'
+    clean: true
+    fetchDepth: 1
+  
+  - script: |
+      sudo npm install -g firebase-tools
+      cd family-dollar-mobile-app
+      yarn
+      cd packages/family_dollar_app/ios
+      sed -i -e "s|'${{parameters.project}}'|'${{parameters.scheme}}'|g" ./podfile
+      bundle install && RCT_NEW_ARCH_ENABLED=0 NO_FLIPPER=1 bundle exec pod install
+      cd ..
+      yarn bundle:ios
+    displayName: 'Install Dependencies & Create RN Bundle'
+
+  - task: InstallAppleCertificate@2
+    inputs:
+      certSecureFile: 'iOS_Distribution_Certificate.p12'
+      certPwd: $(cert_pwd)
+      keychain: 'temp'
+    displayName: 'Install Code Signing Certificate'
+
+  - task: InstallAppleProvisioningProfile@1
+    inputs:
+      provisioningProfileLocation: 'secureFiles'
+      provProfileSecureFile: 'Family_Dollar_STG_Adhoc_Dist.mobileprovision'
+    displayName: 'Install App Provisioning Profile'
+  
+  - task: Bash@3
+    env:
+      BuildNumber: ${{parameters.buildNumber}}
+      AppVersion: ${{parameters.releaseVersion}}
+      XCODEPATH: ${{parameters.xcodePath}}
+      DEVELOPER_DIR: ${{parameters.xcodePath}}/Contents/Developer
+    inputs:
+      targetType: 'inline'
+      script: |
+        # Setting build concurrency to 6 (2 times the number of cores on the macos agent)
+        defaults write com.apple.dt.xcodebuild IDEBuildOperationMaxNumberOfConcurrentCompileTask 6
+        defaults write com.apple.dt.xcodebuild PBXNumberOfParallelBuildSubtasks 6
+        defaults write com.apple.dt.Xcode PBXNumberOfParallelBuildSubtasks 6
+        defaults write com.apple.dt.Xcode IDEBuildOperationMaxNumberOfConcurrentCompileTasks 6
+
+        # switching xcode to the version configured above in parameters
+        sudo xcode-select -s ${{parameters.xcodePath}}
+        xcode-select -p
+
+        cd ${{parameters.projectPath}}/ios
+
+        # find and replace app and build version in the xcode project file
+        sed -i -e 's|$AppVersion|'$AppVersion'|g' ./${{parameters.project}}.xcodeproj/project.pbxproj
+        sed -i -e 's|$BuildNumber|'$BuildNumber'|g' ./${{parameters.project}}.xcodeproj/project.pbxproj
+
+        # build and archive
+        xcodebuild archive \
+          -workspace ${{parameters.project}}.xcworkspace \
+          -scheme ${{parameters.scheme}} \
+          -archivePath ${{parameters.projectPath}}/ios/FamilyDollar.xcarchive \
+          -destination generic/platform=iOS \
+          -configuration ${{parameters.config}} \
+          -derivedDataPath $(Build.Repository.LocalPath)
+        
+        # export the archive
+        xcodebuild -exportArchive \
+          -archivePath ${{parameters.projectPath}}/ios/FamilyDollar.xcarchive \
+          -exportOptionsPlist ${{parameters.projectPath}}/ios/Configs/stage/ExportOptions.plist \
+          -exportPath ${{parameters.projectPath}}/ios \
+          -destination generic/platform=iOS
+        
+        # rename the IPA file to suffix version
+        mv ${{parameters.projectPath}}/ios/${{parameters.scheme}}.ipa \
+          ${{parameters.projectPath}}/ios/STG_FamilyDollar_v${{parameters.releaseVersion}}.${{parameters.buildNumber}}.ipa
+    displayName: 'Build, Archive & Export Package'
+  
+  - task: ArchiveFiles@2
+    inputs:
+      rootFolderOrFile: '${{parameters.projectPath}}/ios/FamilyDollar.xcarchive' 
+      includeRootFolder: true 
+      archiveType: 'zip' # Options: zip, 7z, tar, wim
+      tarCompression: 'gz' # Optional. Options: gz, bz2, xz, none
+      archiveFile: '$(Build.ArtifactStagingDirectory)/FamilyDollar.xcarchive.zip' 
+      replaceExistingArchive: true
+    displayName: 'Copy XCArchive to staging directory'
+
+  - task: CopyFiles@2
+    inputs:
+      contents: '${{parameters.projectPath}}/ios/*.ipa'
+      targetFolder: '$(Build.ArtifactStagingDirectory)'
+    displayName: 'Copy IPA to staging directory'
+
+  - script: |
+      curl -u $(browserstack_user) \
+        -X POST https://api-cloud.browserstack.com/app-live/upload \
+        -F file=@${{parameters.projectPath}}/ios/STG_FamilyDollar_v${{parameters.releaseVersion}}.${{parameters.buildNumber}}.ipa
+    displayName: 'Deploy to Browserstack App-Live'
+    condition: eq('${{parameters.deployBrowserstack}}', true)
+
+  - script: |
+      firebase appdistribution:distribute ${{parameters.projectPath}}/ios/STG_FamilyDollar_v${{parameters.releaseVersion}}.${{parameters.buildNumber}}.ipa \
+        --app 1:546665870578:ios:9db9ce367405858bebcc6b \
+        --groups "${{parameters.testGroups}}" \
+        --release-notes "Build deployed from ADO pipeline" \
+        --token $(firebase_ci_token)
+    displayName: 'Deploy to Firebase'
+    condition: eq('${{parameters.deployFirebase}}', true)
+    
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Build Artifacts'
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    condition: and(succeededOrFailed(), eq('${{parameters.publishArtifacts}}', true))
+
+
+- job: 'Android_App_Package_Build_and_Deploy'
+  condition: eq('${{parameters.buildAndroid}}', true)
+  timeoutInMinutes: 60
+  
+  pool:
+    vmImage: 'ubuntu-latest'
+
+  steps:
+  - checkout: self
+    displayName: 'Checkout FD Code Repo'
+    clean: true
+    fetchDepth: 1
+
+  - script: |
+      sudo npm install -g firebase-tools
+      cd family-dollar-mobile-app
+      yarn
+      
+      # find and replace application ID in the build.gradle file
+      # sed -i -e 's|com.familydollar.consumer.dev|com.familydollar.consumer.qa|g' ${{parameters.projectPath}}/android/build.gradle
+    displayName: 'Install Dependencies'
+
+  - task: Gradle@3
+    displayName: 'Build APK'
+    inputs:
+      gradleWrapperFile: '${{parameters.projectPath}}/android/gradlew'
+      workingDirectory: '${{parameters.projectPath}}/android/'
+      options: '-PversionName=${{parameters.releaseVersion}} -PversionCode=${{parameters.buildNumber}}'
+      tasks: 'app:assemble${{parameters.config}} --parallel --max-workers=8'
+      publishJUnitResults: false
+      javaHomeOption: 'JDKVersion'
+      jdkVersionOption: '1.11'
+      gradleOptions: '-Xmx3072m'
+      sonarQubeRunAnalysis: false
+
+  # - task: AndroidSigning@3
+  #   displayName: 'Sign APK'
+  #   inputs:
+  #     apkFiles: '${{parameters.projectPath}}/android/app/build/outputs/apk/release/*.apk'
+  #     apksignerKeystoreFile: 'mobile-prod.keystore'
+  #     apksignerKeystorePassword: '$(AndroidKeyStorePassword)'
+  #     apksignerKeystoreAlias: '$(AndroidKeyAlias)'
+  #     apksignerKeyPassword: '$(AndroidKeyAliasPassword)'
+  #     zipalign: true
+
+  - task: Bash@3
+    inputs:
+      targetType: 'inline'
+      script: |
+        # rename the APK file to suffix version
+        mv ${{parameters.projectPath}}/android/app/build/outputs/apk/${{lower(parameters.config)}}/app-${{lower(parameters.config)}}.apk \
+          ${{parameters.projectPath}}/android/STG_FamilyDollar_v${{parameters.releaseVersion}}.${{parameters.buildNumber}}.apk
+    displayName: 'Rename APK File'
+  
+  - task: CopyFiles@2
+    inputs:
+      contents: '${{parameters.projectPath}}/android/*.apk'
+      targetFolder: '$(Build.ArtifactStagingDirectory)'
+    displayName: 'Copy APK to staging directory'
+
+  - script: |
+      curl -u $(browserstack_user) \
+        -X POST https://api-cloud.browserstack.com/app-live/upload \
+        -F file=@${{parameters.projectPath}}/android/STG_FamilyDollar_v${{parameters.releaseVersion}}.${{parameters.buildNumber}}.apk
+    displayName: 'Deploy to Browserstack App-Live'
+    condition: eq('${{parameters.deployBrowserstack}}', true)
+
+  # - script: |
+  #     firebase appdistribution:distribute ${{parameters.projectPath}}/android/STG_FamilyDollar_v${{parameters.releaseVersion}}.${{parameters.buildNumber}}.apk \
+  #       --app 1:546665870578:android:22da6e514ac3fe24ebcc6b \
+  #       --groups "${{parameters.testGroups}}" \
+  #       --release-notes "Build deployed from ADO pipeline" \
+  #       --token $(firebase_ci_token)
+  #   displayName: 'Deploy to Firebase'
+  #   condition: eq('${{parameters.deployFirebase}}', true)
+    
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Build Artifacts'
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    condition: and(succeededOrFailed(), eq('${{parameters.publishArtifacts}}', true))

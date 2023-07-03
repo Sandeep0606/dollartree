@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  labels:
+    app.kubernetes.io/component: node
+    app.kubernetes.io/instance: redis
+    app.kubernetes.io/name: redis
+  name: redis-data
+  namespace: dollar-tree-i
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 8Gi
+  storageClassName: pd-ssd
+  volumeMode: Filesystem
+

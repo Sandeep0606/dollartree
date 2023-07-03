@@ -1,0 +1,16 @@
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: jenkins-pvc
+  labels:
+    "app.kubernetes.io/name": 'jenkins'
+    "helm.sh/chart": "jenkins-4.3.24"
+    "app.kubernetes.io/managed-by": "Helm"
+    "app.kubernetes.io/instance": "cd-jenkins"
+    "app.kubernetes.io/component": "jenkins-controller"
+spec:
+  accessModes:
+    - "ReadWriteOnce"
+  resources:
+    requests:
+      storage: "80Gi"

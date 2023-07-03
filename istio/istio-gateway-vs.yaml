@@ -1,0 +1,139 @@
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: dollartree-gateway
+spec:
+  selector:
+    istio: ingress
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"	
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: dollartree-vs
+spec:
+  hosts:
+  - "*"
+  gateways:
+  - dollartree-gateway
+  http:
+  - match:
+    - uri:
+        prefix: /profile
+    route:
+    - destination:
+        port:
+          number: 8080
+        host: profile-service.dollar-tree-a.svc.cluster.local
+    corsPolicy:
+      allowOrigin:
+        - "*"
+    headers:
+        response:
+          add:
+            access-control-allow-origin: "*"
+            access-control-allow-methods: "GET, POST, PUT, DELETE"
+            access-control-allow-headers: "*"
+  - match:
+    - uri:
+        prefix: /category
+    route:
+    - destination:
+        port:
+          number: 8080
+        host: category-service.dollar-tree-a.svc.cluster.local
+    corsPolicy:
+      allowOrigin:
+        - "*"
+    headers:
+        response:
+          add:
+            access-control-allow-origin: "*"
+            access-control-allow-methods: "GET, POST, PUT, DELETE"
+  - match:
+    - uri:
+        prefix: /store
+    route:
+    - destination:
+        port:
+          number: 8080
+        host: store-service.dollar-tree-a.svc.cluster.local
+    corsPolicy:
+      allowOrigin:
+        - "*"
+    headers:
+        response:
+          add:
+            access-control-allow-origin: "*"
+            access-control-allow-methods: "GET, POST, PUT, DELETE"
+  - match:
+    - uri:
+        prefix: /marketing
+    route:
+    - destination:
+        port:
+          number: 8080
+        host: marketing-service.dollar-tree-a.svc.cluster.local
+    corsPolicy:
+      allowOrigin:
+        - "*"
+    headers:
+        response:
+          add:
+            access-control-allow-origin: "*"
+            access-control-allow-methods: "GET, POST, PUT, DELETE"
+  - match:
+    - uri:
+        prefix: /product
+    route:
+    - destination:
+        port:
+          number: 8080
+        host: product-service.dollar-tree-a.svc.cluster.local
+    corsPolicy:
+      allowOrigin:
+        - "*"
+    headers:
+        response:
+          add:
+            access-control-allow-origin: "*"
+            access-control-allow-methods: "GET, POST, PUT, DELETE"
+  - match:
+    - uri:
+        prefix: /search
+    route:
+    - destination:
+        port:
+          number: 8080
+        host: search-service.dollar-tree-a.svc.cluster.local
+    corsPolicy:
+      allowOrigin:
+        - "*"
+    headers:
+        response:
+          add:
+            access-control-allow-origin: "*"
+            access-control-allow-methods: "GET, POST, PUT, DELETE"
+  - match:
+    - uri:
+        prefix: /content
+    route:
+    - destination:
+        port:
+          number: 8080
+        host: content-service.dollar-tree-a.svc.cluster.local
+    corsPolicy:
+      allowOrigin:
+        - "*"
+    headers:
+        response:
+          add:
+            access-control-allow-origin: "*"
+            access-control-allow-methods: "GET, POST, PUT, DELETE"
