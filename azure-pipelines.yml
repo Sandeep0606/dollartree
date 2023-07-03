@@ -1,0 +1,136 @@
+# Pipeline to build and deploy Family Dollar Mobile App
+pr: none
+trigger: none
+
+# Parameters that can be changed during build trigger
+parameters:
+  - name: majorVersion
+    displayName: 'Major Release Version'
+    type: number
+    default: 1
+  - name: minorVersion
+    displayName: 'Minor Release Version'
+    type: number
+    default: 0
+  - name: buildNumber
+    displayName: 'Build Number'
+    type: string
+    default: $(Build.BuildId)
+  - name: environment
+    displayName: 'Environment'
+    type: string
+    default: 'STG'
+  - name: projectPath
+    displayName: 'Project Path'
+    type: string
+    default: '$(Build.Repository.LocalPath)/family-dollar-mobile-app/packages/family_dollar_app/ios'
+  - name: scheme
+    displayName: 'Xcode Scheme'
+    type: string
+    default: 'family_dollar_app'
+  - name: config
+    displayName: 'XCode Config'
+    type: string
+    default: 'Debug'
+
+variables:
+- group: FamilyDollar_Mobile_App_Build
+  
+jobs:
+- job: 'iOS_App_Package_Build_and_Deploy'
+  timeoutInMinutes: 60
+  
+  pool:
+    vmImage: 'macOS-latest'
+
+  steps:
+  - checkout: self
+    displayName: 'Checkout FD Code Repo'
+    clean: true
+    fetchDepth: 1
+    lfs: true
+  
+  - script: |
+      sudo npm install -g firebase-tools
+      cd family-dollar-mobile-app
+      yarn
+      cd packages/family_dollar_app/ios
+      bundle install && RCT_NEW_ARCH_ENABLED=1 bundle exec pod install
+      cd ..
+      yarn build:ios
+    displayName: 'Install Dependencies & Create RN Bundle'
+
+  - task: InstallAppleCertificate@2
+    inputs:
+      certSecureFile: 'iOS_Distribution_Certificate.p12'
+      certPwd: $(cert_pwd)
+      keychain: 'temp'
+    displayName: 'Install Code Signing Certificate'
+
+  - task: InstallAppleProvisioningProfile@1
+    inputs:
+      provisioningProfileLocation: 'secureFiles'
+      provProfileSecureFile: 'FD_Commerce_Adhoc_Distribution.mobileprovision'
+    displayName: 'Install App Provisioning Profile'
+  
+  - task: Bash@3
+    env:
+      BuildNumber: ${{parameters.buildNumber}}
+      AppVersion: ${{parameters.majorVersion}}.${{parameters.minorVersion}}
+    inputs:
+      targetType: 'inline'
+      script: |
+        cd ${{parameters.projectPath}}
+        sed -i -e 's|$AppVersion|'$AppVersion'|g' ./${{parameters.scheme}}.xcodeproj/project.pbxproj
+        sed -i -e 's|$BuildNumber|'$BuildNumber'|g' ./${{parameters.scheme}}.xcodeproj/project.pbxproj
+        xcodebuild archive \
+          -workspace ${{parameters.scheme}}.xcworkspace \
+          -scheme ${{parameters.scheme}} \
+          -archivePath ${{parameters.projectPath}}/FamilyDollar.xcarchive \
+          -destination generic/platform=iOS \
+          -configuration ${{parameters.config}} \
+          -derivedDataPath $(Build.Repository.LocalPath)
+        xcodebuild -exportArchive \
+          -archivePath ${{parameters.projectPath}}/FamilyDollar.xcarchive \
+          -exportOptionsPlist ${{parameters.projectPath}}/ExportOptions.plist \
+          -exportPath ${{parameters.projectPath}} \
+          -destination generic/platform=iOS
+        mv ${{parameters.projectPath}}/${{parameters.scheme}}.ipa \
+          ${{parameters.projectPath}}/${{parameters.scheme}}_v${{parameters.majorVersion}}.${{parameters.minorVersion}}.${{parameters.buildNumber}}.ipa
+    displayName: 'Build, Archive & Export Package'
+  
+  # - task: ArchiveFiles@2
+  #   inputs:
+  #     rootFolderOrFile: '${{parameters.projectPath}}/FamilyDollar.xcarchive' 
+  #     includeRootFolder: true 
+  #     archiveType: 'zip' # Options: zip, 7z, tar, wim
+  #     tarCompression: 'gz' # Optional. Options: gz, bz2, xz, none
+  #     archiveFile: '$(Build.ArtifactStagingDirectory)/FamilyDollar.xcarchive.zip' 
+  #     replaceExistingArchive: true
+  #   displayName: 'Copy XCArchive to staging directory'
+
+  - task: CopyFiles@2
+    inputs:
+      contents: '${{parameters.projectPath}}/*.ipa'
+      targetFolder: '$(Build.ArtifactStagingDirectory)'
+    displayName: 'Copy IPA to staging directory'
+
+  - script: |
+      curl -u $(browserstack_user) \
+        -X POST https://api-cloud.browserstack.com/app-live/upload \
+        -F file=@${{parameters.projectPath}}/${{parameters.scheme}}_v${{parameters.majorVersion}}.${{parameters.minorVersion}}.${{parameters.buildNumber}}.ipa
+    displayName: 'Deploy to Browserstack App-Live'
+
+  - script: |
+      firebase appdistribution:distribute ${{parameters.projectPath}}/${{parameters.scheme}}_v${{parameters.majorVersion}}.${{parameters.minorVersion}}.${{parameters.buildNumber}}.ipa \
+        --app 1:455169236032:ios:ec96c13873d401253bd3a5 \
+        --groups "ps_dev,fd_dev" \
+        --release-notes "Build deployed from ADO pipeline" \
+        --token $(firebase_ci_token)
+    displayName: 'Deploy to Firebase'
+    
+  - task: PublishBuildArtifacts@1
+    displayName: 'Publish Build Artifacts'
+    inputs:
+      PathtoPublish: '$(Build.ArtifactStagingDirectory)'
+    condition: succeededOrFailed()
